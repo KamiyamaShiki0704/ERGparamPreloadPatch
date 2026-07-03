@@ -31,17 +31,6 @@ The sample config is in `config/gparam_preload_patch.ini`.
 
 ## Configuration
 
-```ini
-enabled=true
-log_enabled=false
-common_event_ids=5,6,7,8,21,25
-start_delay_ms=5000
-retries_per_id=120
-retry_every_frames=60
-request_filecap=true
-prime_drawparam=true
-```
-
 `common_event_ids` controls which CommonEvent GPARAM ids are registered. Each id maps to:
 
 ```text
@@ -59,3 +48,10 @@ This patch was tested against the local Elden Ring executable used during develo
 - GPARAM resource manager global: `eldenring.exe+0x03D5B0F8`
 
 These offsets may need updating for other game versions.
+
+## License
+
+Licensed under either of:
+
+- MIT license (`LICENSE-MIT`)
+- Apache License, Version 2.0 (`LICENSE-APACHE`)
