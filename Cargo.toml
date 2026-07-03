@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "vendor/fromsoftware-rs/crates/shared",
+    "vendor/fromsoftware-rs/crates/shared/macros",
+    "vendor/fromsoftware-rs/crates/shared/stl",
+    "vendor/fromsoftware-rs/crates/eldenring",
+]
+
+[workspace.package]
+version = "0.14.0"
+edition = "2024"
+repository = "https://github.com/vswarte/eldenring-rs"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+fromsoftware-shared = { path = "vendor/fromsoftware-rs/crates/shared", version = "0.14.0", package = "fromsoftware-shared" }
+fromsoftware-shared-macros = { path = "vendor/fromsoftware-rs/crates/shared/macros", version = "0.14.0", package = "fromsoftware-shared-macros" }
+fromsoftware-shared-stl = { path = "vendor/fromsoftware-rs/crates/shared/stl", version = "0.14.0", package = "fromsoftware-shared-stl" }
+eldenring = { path = "vendor/fromsoftware-rs/crates/eldenring", version = "0.14.0", package = "eldenring" }
+thiserror = "1"
+glam = ">= 0.30"
+pelite = "0.10"
+vtable-rs = "0.1.4"
+bitfield = "0.19.2"
+bitflags = "2.11.0"
+encoding_rs = "0.8.35"
+num_enum = "0.7"
+
+[workspace.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Kernel",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+]
+
+[package]
+name = "er-gparam-preload-patch"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "gparam_preload_patch"
+crate-type = ["cdylib"]
+
+[dependencies]
+fromsoftware-shared.workspace = true
+eldenring.workspace = true
+windows.workspace = true
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"

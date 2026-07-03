@@ -1,0 +1,13 @@
+/target/
+*.log
+*.dll
+*.pdb
+*.exp
+*.lib
+.vs/
+.idea/
+.vscode/
+
+# Local Codex task tracking
+PLANS.md
+TASK_STATUS.md
