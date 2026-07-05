@@ -46,9 +46,10 @@ This patch uses per-executable offset profiles and disables itself when the runn
 Currently supported profiles:
 
 - WW `2.6.2.0`
+- JP `2.6.1.1`
 - JP `2.6.2.1`
 
-The current JP `2.6.2.1` executable is known to share the same addresses as WW `2.6.2.0`. Other JP or game versions may use different offsets.
+The JP `2.6.1.1` and JP `2.6.2.1` executables are known to share the same addresses as WW `2.6.2.0`. Other JP or game versions may use different offsets.
 
 The required offsets are:
 

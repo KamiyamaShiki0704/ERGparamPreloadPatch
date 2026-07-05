@@ -35,6 +35,14 @@ const JP_2621_OFFSETS: GparamOffsets = GparamOffsets {
     gparam_resource_manager_global: 0x03D5B0F8,
 };
 
+const JP_2611_OFFSETS: GparamOffsets = GparamOffsets {
+    // Verified against eldenring.jp.exe product version 2.6.1.1.
+    profile: "JP 2.6.1.1",
+    common_event_preload_fn: 0x00AB89A0,
+    gparam_filecap_request_fn: 0x001F2420,
+    gparam_resource_manager_global: 0x03D5B0F8,
+};
+
 #[derive(Clone)]
 struct Config {
     enabled: bool,
@@ -80,6 +88,7 @@ struct GparamOffsets {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SupportedExe {
     Ww262,
+    Jp2611,
     Jp2621,
 }
 
@@ -89,6 +98,7 @@ impl GameVersion for SupportedExe {
     fn from_lang_version(lang_id: u16, version: &str) -> Option<Self> {
         match (lang_id, version) {
             (LANG_ID_EN, "2.6.2.0") => Some(Self::Ww262),
+            (LANG_ID_JP, "2.6.1.1") => Some(Self::Jp2611),
             (LANG_ID_JP, "2.6.2.1") => Some(Self::Jp2621),
             _ => None,
         }
@@ -99,6 +109,7 @@ impl SupportedExe {
     const fn offsets(self) -> &'static GparamOffsets {
         match self {
             Self::Ww262 => &WW_262_OFFSETS,
+            Self::Jp2611 => &JP_2611_OFFSETS,
             Self::Jp2621 => &JP_2621_OFFSETS,
         }
     }
