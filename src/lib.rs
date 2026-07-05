@@ -10,15 +10,30 @@ use eldenring::{
     cs::{CSTaskGroupIndex, CSTaskImp, CSWorldSceneDrawParamManager},
     fd4::FD4TaskData,
 };
-use fromsoftware_shared::{FromStatic, SharedTaskImpExt};
+use fromsoftware_shared::{
+    FromStatic, SharedTaskImpExt,
+    game_version::{GameVersion, LANG_ID_EN, LANG_ID_JP},
+};
+use pelite::pe64::PeView;
 use windows::Win32::{
     Foundation::HMODULE,
     System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleA},
 };
 
-const COMMON_EVENT_PRELOAD_FN_RVA: usize = 0x00AB89A0;
-const GPARAM_FILECAP_REQUEST_FN_RVA: usize = 0x001F2420;
-const GPARAM_RESOURCE_MANAGER_GLOBAL_RVA: usize = 0x03D5B0F8;
+const WW_262_OFFSETS: GparamOffsets = GparamOffsets {
+    profile: "WW 2.6.2.0",
+    common_event_preload_fn: 0x00AB89A0,
+    gparam_filecap_request_fn: 0x001F2420,
+    gparam_resource_manager_global: 0x03D5B0F8,
+};
+
+const JP_2621_OFFSETS: GparamOffsets = GparamOffsets {
+    // The current JP 1.16.2 executable is known to match the WW addresses.
+    profile: "JP 2.6.2.1",
+    common_event_preload_fn: 0x00AB89A0,
+    gparam_filecap_request_fn: 0x001F2420,
+    gparam_resource_manager_global: 0x03D5B0F8,
+};
 
 #[derive(Clone)]
 struct Config {
@@ -54,8 +69,44 @@ struct PendingId {
     done: bool,
 }
 
+#[derive(Clone, Copy)]
+struct GparamOffsets {
+    profile: &'static str,
+    common_event_preload_fn: usize,
+    gparam_filecap_request_fn: usize,
+    gparam_resource_manager_global: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SupportedExe {
+    Ww262,
+    Jp2621,
+}
+
+impl GameVersion for SupportedExe {
+    const NAME: &'static str = "elden ring";
+
+    fn from_lang_version(lang_id: u16, version: &str) -> Option<Self> {
+        match (lang_id, version) {
+            (LANG_ID_EN, "2.6.2.0") => Some(Self::Ww262),
+            (LANG_ID_JP, "2.6.2.1") => Some(Self::Jp2621),
+            _ => None,
+        }
+    }
+}
+
+impl SupportedExe {
+    const fn offsets(self) -> &'static GparamOffsets {
+        match self {
+            Self::Ww262 => &WW_262_OFFSETS,
+            Self::Jp2621 => &JP_2621_OFFSETS,
+        }
+    }
+}
+
 type CommonEventPreloadFn = unsafe extern "system" fn(*mut c_void, u32, f32);
-type GparamFilecapRequestFn = unsafe extern "system" fn(*mut c_void, *const u16, usize) -> *mut c_void;
+type GparamFilecapRequestFn =
+    unsafe extern "system" fn(*mut c_void, *const u16, usize) -> *mut c_void;
 
 /// # Safety
 ///
@@ -99,7 +150,26 @@ pub unsafe extern "C" fn DllMain(_hmodule: usize, reason: u32) -> bool {
             return;
         }
 
-        load_common_event_ids_after_delay(log_path, config);
+        let offsets = match detect_offsets() {
+            Ok(offsets) => offsets,
+            Err(message) => {
+                append_log(&log_path, &format!("{message}; loader disabled"));
+                return;
+            }
+        };
+
+        append_log(
+            &log_path,
+            &format!(
+                "using offset profile {} filecap_request=0x{:X} common_event_prime=0x{:X} resource_manager_global=0x{:X}",
+                offsets.profile,
+                offsets.gparam_filecap_request_fn,
+                offsets.common_event_preload_fn,
+                offsets.gparam_resource_manager_global
+            ),
+        );
+
+        load_common_event_ids_after_delay(log_path, config, *offsets);
     });
 
     true
@@ -184,7 +254,11 @@ impl Config {
     }
 }
 
-fn load_common_event_ids_after_delay(log_path: Option<PathBuf>, config: Config) {
+fn load_common_event_ids_after_delay(
+    log_path: Option<PathBuf>,
+    config: Config,
+    offsets: GparamOffsets,
+) {
     std::thread::sleep(Duration::from_millis(config.start_delay_ms));
 
     let Ok(cs_task) = CSTaskImp::wait_for_instance(Duration::MAX) else {
@@ -245,7 +319,7 @@ fn load_common_event_ids_after_delay(log_path: Option<PathBuf>, config: Config) 
 
                 pending_id.attempts = pending_id.attempts.saturating_add(1);
                 match unsafe {
-                    load_common_event_id(pending_id.id, request_filecap, prime_drawparam)
+                    load_common_event_id(pending_id.id, request_filecap, prime_drawparam, offsets)
                 } {
                     Ok(message) => {
                         append_log(
@@ -283,13 +357,14 @@ unsafe fn load_common_event_id(
     id: u32,
     request_filecap: bool,
     prime_drawparam: bool,
+    offsets: GparamOffsets,
 ) -> Result<String, String> {
     let exe = unsafe { GetModuleHandleA(None) }
         .map_err(|err| format!("GetModuleHandleA(None) failed: {err:?}"))?;
     let base = exe.0 as usize;
 
     let request_message = if request_filecap {
-        unsafe { request_common_event_filecap(base, id) }?
+        unsafe { request_common_event_filecap(base, id, offsets) }?
     } else {
         "filecap_request skipped".to_string()
     };
@@ -298,7 +373,7 @@ unsafe fn load_common_event_id(
         return Ok(format!("{request_message}; prime_drawparam skipped"));
     }
 
-    let fn_addr = base + COMMON_EVENT_PRELOAD_FN_RVA;
+    let fn_addr = base + offsets.common_event_preload_fn;
     let manager = unsafe { CSWorldSceneDrawParamManager::instance() }
         .map_err(|_| "CSWorldSceneDrawParamManager instance not found".to_string())?;
     let manager_addr = manager as *const CSWorldSceneDrawParamManager as *mut c_void;
@@ -309,21 +384,26 @@ unsafe fn load_common_event_id(
     }
 
     Ok(format!(
-        "{request_message}; primed eldenring.exe+0x{COMMON_EVENT_PRELOAD_FN_RVA:X} addr=0x{fn_addr:X} manager=0x{:X}",
-        manager_addr as usize
+        "{request_message}; primed eldenring.exe+0x{:X} addr=0x{fn_addr:X} manager=0x{:X}",
+        offsets.common_event_preload_fn, manager_addr as usize
     ))
 }
 
-unsafe fn request_common_event_filecap(base: usize, id: u32) -> Result<String, String> {
-    let manager_ptr_addr = base + GPARAM_RESOURCE_MANAGER_GLOBAL_RVA;
+unsafe fn request_common_event_filecap(
+    base: usize,
+    id: u32,
+    offsets: GparamOffsets,
+) -> Result<String, String> {
+    let manager_ptr_addr = base + offsets.gparam_resource_manager_global;
     let resource_manager = unsafe { *(manager_ptr_addr as *const *mut c_void) };
     if resource_manager.is_null() {
         return Err(format!(
-            "gparam resource manager global eldenring.exe+0x{GPARAM_RESOURCE_MANAGER_GLOBAL_RVA:X} is null"
+            "gparam resource manager global eldenring.exe+0x{:X} is null",
+            offsets.gparam_resource_manager_global
         ));
     }
 
-    let request_addr = base + GPARAM_FILECAP_REQUEST_FN_RVA;
+    let request_addr = base + offsets.gparam_filecap_request_fn;
     let request: GparamFilecapRequestFn = unsafe { std::mem::transmute(request_addr) };
     let path = format!("gparam:/m00_00_{id:04}_CommonEvent.gparam");
     let mut wide_path = path.encode_utf16().collect::<Vec<_>>();
@@ -338,10 +418,18 @@ unsafe fn request_common_event_filecap(base: usize, id: u32) -> Result<String, S
     }
 
     Ok(format!(
-        "filecap_request path={path} fn=eldenring.exe+0x{GPARAM_FILECAP_REQUEST_FN_RVA:X} addr=0x{request_addr:X} resource_manager=0x{:X} result=0x{:X}",
-        resource_manager as usize,
-        filecap as usize
+        "filecap_request path={path} fn=eldenring.exe+0x{:X} addr=0x{request_addr:X} resource_manager=0x{:X} result=0x{:X}",
+        offsets.gparam_filecap_request_fn, resource_manager as usize, filecap as usize
     ))
+}
+
+fn detect_offsets() -> Result<&'static GparamOffsets, String> {
+    let exe = unsafe { GetModuleHandleA(None) }
+        .map_err(|err| format!("GetModuleHandleA(None) failed: {err:?}"))?;
+    let module = unsafe { PeView::module(exe.0 as *const u8) };
+    SupportedExe::detect(&module)
+        .map(|version| version.offsets())
+        .map_err(|err| format!("unsupported Elden Ring executable: {err}"))
 }
 
 fn parse_id_list(value: &str) -> Vec<u32> {

@@ -41,13 +41,22 @@ gparam:/m00_00_XXXX_CommonEvent.gparam
 
 ## Notes
 
-This patch was tested against the local Elden Ring executable used during development. It relies on fixed RVAs for:
+This patch uses per-executable offset profiles and disables itself when the running Elden Ring executable is not recognized.
+
+Currently supported profiles:
+
+- WW `2.6.2.0`
+- JP `2.6.2.1`
+
+The current JP `2.6.2.1` executable is known to share the same addresses as WW `2.6.2.0`. Other JP or game versions may use different offsets.
+
+The required offsets are:
 
 - GPARAM filecap request: `eldenring.exe+0x001F2420`
 - CommonEvent drawparam prime: `eldenring.exe+0x00AB89A0`
 - GPARAM resource manager global: `eldenring.exe+0x03D5B0F8`
 
-These offsets may need updating for other game versions.
+Unsupported versions need their own offset profile before the loader can safely run.
 
 ## License
 
