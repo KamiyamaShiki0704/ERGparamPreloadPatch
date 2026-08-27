@@ -20,6 +20,14 @@ use windows::Win32::{
     System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleA},
 };
 
+const WW_270_OFFSETS: GparamOffsets = GparamOffsets {
+    // Verified against WW eldenring.exe product version 2.7.0.0.
+    profile: "WW 2.7.0.0",
+    common_event_preload_fn: 0x00AB9CB0,
+    gparam_filecap_request_fn: 0x001F2420,
+    gparam_resource_manager_global: 0x03D5F158,
+};
+
 const WW_262_OFFSETS: GparamOffsets = GparamOffsets {
     profile: "WW 2.6.2.0",
     common_event_preload_fn: 0x00AB89A0,
@@ -87,6 +95,7 @@ struct GparamOffsets {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SupportedExe {
+    Ww270,
     Ww262,
     Jp2611,
     Jp2621,
@@ -97,6 +106,7 @@ impl GameVersion for SupportedExe {
 
     fn from_lang_version(lang_id: u16, version: &str) -> Option<Self> {
         match (lang_id, version) {
+            (LANG_ID_EN, "2.7.0.0") => Some(Self::Ww270),
             (LANG_ID_EN, "2.6.2.0") => Some(Self::Ww262),
             (LANG_ID_JP, "2.6.1.1") => Some(Self::Jp2611),
             (LANG_ID_JP, "2.6.2.1") => Some(Self::Jp2621),
@@ -108,6 +118,7 @@ impl GameVersion for SupportedExe {
 impl SupportedExe {
     const fn offsets(self) -> &'static GparamOffsets {
         match self {
+            Self::Ww270 => &WW_270_OFFSETS,
             Self::Ww262 => &WW_262_OFFSETS,
             Self::Jp2611 => &JP_2611_OFFSETS,
             Self::Jp2621 => &JP_2621_OFFSETS,
@@ -489,5 +500,21 @@ fn append_log(path: &Option<PathBuf>, message: &str) {
 
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_ww_270_profile() {
+        let version = SupportedExe::from_lang_version(LANG_ID_EN, "2.7.0.0")
+            .expect("WW 2.7.0.0 should be supported");
+
+        assert_eq!(version, SupportedExe::Ww270);
+        assert_eq!(version.offsets().common_event_preload_fn, 0x00AB9CB0);
+        assert_eq!(version.offsets().gparam_filecap_request_fn, 0x001F2420);
+        assert_eq!(version.offsets().gparam_resource_manager_global, 0x03D5F158);
     }
 }

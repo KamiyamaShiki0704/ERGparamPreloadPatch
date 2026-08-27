@@ -45,17 +45,21 @@ This patch uses per-executable offset profiles and disables itself when the runn
 
 Currently supported profiles:
 
+- WW `2.7.0.0`
 - WW `2.6.2.0`
 - JP `2.6.1.1`
 - JP `2.6.2.1`
 
-The JP `2.6.1.1` and JP `2.6.2.1` executables are known to share the same addresses as WW `2.6.2.0`. Other JP or game versions may use different offsets.
+The JP `2.6.1.1` and JP `2.6.2.1` executables are known to share the same addresses as WW `2.6.2.0`. WW `2.7.0.0` uses updated addresses for the CommonEvent prime function and GPARAM resource-manager global. Other JP or game versions may use different offsets.
 
-The required offsets are:
+The verified offsets are:
 
-- GPARAM filecap request: `eldenring.exe+0x001F2420`
-- CommonEvent drawparam prime: `eldenring.exe+0x00AB89A0`
-- GPARAM resource manager global: `eldenring.exe+0x03D5B0F8`
+| Profile | GPARAM filecap request | CommonEvent drawparam prime | GPARAM resource manager global |
+| --- | --- | --- | --- |
+| WW `2.7.0.0` | `0x001F2420` | `0x00AB9CB0` | `0x03D5F158` |
+| WW `2.6.2.0` | `0x001F2420` | `0x00AB89A0` | `0x03D5B0F8` |
+| JP `2.6.1.1` | `0x001F2420` | `0x00AB89A0` | `0x03D5B0F8` |
+| JP `2.6.2.1` | `0x001F2420` | `0x00AB89A0` | `0x03D5B0F8` |
 
 Unsupported versions need their own offset profile before the loader can safely run.
 
