@@ -52,6 +52,8 @@ Currently supported profiles:
 
 The JP `2.6.1.1` and JP `2.6.2.1` executables are known to share the same addresses as WW `2.6.2.0`. WW `2.7.0.0` uses updated addresses for the CommonEvent prime function and GPARAM resource-manager global. Other JP or game versions may use different offsets.
 
+Version `0.1.2` also includes the updated WW `2.7.0.0` task-runtime RVA map required to register the loader's `DrawParamUpdate` callback. Earlier `0.1.1` builds recognized the new GPARAM profile but could abort during loading when the vendored task runtime rejected the executable version.
+
 The verified offsets are:
 
 | Profile | GPARAM filecap request | CommonEvent drawparam prime | GPARAM resource manager global |
