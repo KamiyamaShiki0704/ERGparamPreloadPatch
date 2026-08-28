@@ -70,6 +70,7 @@ checksum = "c2ea6706d74fca54e15f1d40b5cf7fe7f764aaec61352a9fcec58fe27e042fc8"
 [[package]]
 name = "eldenring"
 version = "0.14.0"
+source = "git+https://github.com/vswarte/fromsoftware-rs?rev=0b44ede3ae9d95d39bfef65edc0694380a1b83c3#0b44ede3ae9d95d39bfef65edc0694380a1b83c3"
 dependencies = [
  "bitfield",
  "bitflags",
@@ -125,6 +126,7 @@ dependencies = [
 [[package]]
 name = "fromsoftware-shared"
 version = "0.14.0"
+source = "git+https://github.com/vswarte/fromsoftware-rs?rev=0b44ede3ae9d95d39bfef65edc0694380a1b83c3#0b44ede3ae9d95d39bfef65edc0694380a1b83c3"
 dependencies = [
  "bitflags",
  "from-singleton",
@@ -140,6 +142,7 @@ dependencies = [
 [[package]]
 name = "fromsoftware-shared-macros"
 version = "0.14.0"
+source = "git+https://github.com/vswarte/fromsoftware-rs?rev=0b44ede3ae9d95d39bfef65edc0694380a1b83c3#0b44ede3ae9d95d39bfef65edc0694380a1b83c3"
 dependencies = [
  "inflections",
  "proc-macro2",
@@ -150,6 +153,7 @@ dependencies = [
 [[package]]
 name = "fromsoftware-shared-stl"
 version = "0.14.0"
+source = "git+https://github.com/vswarte/fromsoftware-rs?rev=0b44ede3ae9d95d39bfef65edc0694380a1b83c3#0b44ede3ae9d95d39bfef65edc0694380a1b83c3"
 
 [[package]]
 name = "fxhash"

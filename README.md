@@ -16,7 +16,7 @@ The output DLL is:
 target\release\gparam_preload_patch.dll
 ```
 
-The repository vendors the required `fromsoftware-rs` crates under `vendor/fromsoftware-rs` so the DLL can be built as a standalone workspace.
+Cargo fetches the required `eldenring` and `fromsoftware-shared` crates from the canonical [`fromsoftware-rs`](https://github.com/vswarte/fromsoftware-rs) repository. Both dependencies are pinned with `rev` to the exact commit `0b44ede3ae9d95d39bfef65edc0694380a1b83c3`; no `fromsoftware-rs` source tree is vendored in this repository.
 
 ## Install
 
@@ -52,7 +52,9 @@ Currently supported profiles:
 
 The JP `2.6.1.1` and JP `2.6.2.1` executables are known to share the same addresses as WW `2.6.2.0`. WW `2.7.0.0` uses updated addresses for the CommonEvent prime function and GPARAM resource-manager global. Other JP or game versions may use different offsets.
 
-Version `0.1.2` also includes the updated WW `2.7.0.0` task-runtime RVA map required to register the loader's `DrawParamUpdate` callback. Earlier `0.1.1` builds recognized the new GPARAM profile but could abort during loading when the vendored task runtime rejected the executable version.
+Version `0.1.2` also includes the updated WW `2.7.0.0` task-runtime RVA map required to register the loader's `DrawParamUpdate` callback. Earlier `0.1.1` builds recognized the new GPARAM profile but could abort during loading when the task runtime rejected the executable version.
+
+The loader keeps `global_hinstance` and `register_task` in its own per-executable profiles and uses those addresses to register the pinned upstream `RecurringTask`. This preserves the listed legacy profiles without depending on `fromsoftware-rs`' internal current-version RVA dispatcher.
 
 The verified offsets are:
 

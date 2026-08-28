@@ -3,7 +3,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use eldenring::{
@@ -11,7 +11,7 @@ use eldenring::{
     fd4::FD4TaskData,
 };
 use fromsoftware_shared::{
-    FromStatic, SharedTaskImpExt,
+    FromStatic, InstanceError, RecurringTask,
     game_version::{GameVersion, LANG_ID_EN, LANG_ID_JP},
 };
 use pelite::pe64::PeView;
@@ -26,6 +26,8 @@ const WW_270_OFFSETS: GparamOffsets = GparamOffsets {
     common_event_preload_fn: 0x00AB9CB0,
     gparam_filecap_request_fn: 0x001F2420,
     gparam_resource_manager_global: 0x03D5F158,
+    global_hinstance: 0x03D89708,
+    register_task_fn: 0x00EB3DE0,
 };
 
 const WW_262_OFFSETS: GparamOffsets = GparamOffsets {
@@ -33,6 +35,8 @@ const WW_262_OFFSETS: GparamOffsets = GparamOffsets {
     common_event_preload_fn: 0x00AB89A0,
     gparam_filecap_request_fn: 0x001F2420,
     gparam_resource_manager_global: 0x03D5B0F8,
+    global_hinstance: 0x03D85688,
+    register_task_fn: 0x00EB1FE0,
 };
 
 const JP_2621_OFFSETS: GparamOffsets = GparamOffsets {
@@ -41,6 +45,8 @@ const JP_2621_OFFSETS: GparamOffsets = GparamOffsets {
     common_event_preload_fn: 0x00AB89A0,
     gparam_filecap_request_fn: 0x001F2420,
     gparam_resource_manager_global: 0x03D5B0F8,
+    global_hinstance: 0x03D85688,
+    register_task_fn: 0x00EB1FE0,
 };
 
 const JP_2611_OFFSETS: GparamOffsets = GparamOffsets {
@@ -49,6 +55,8 @@ const JP_2611_OFFSETS: GparamOffsets = GparamOffsets {
     common_event_preload_fn: 0x00AB89A0,
     gparam_filecap_request_fn: 0x001F2420,
     gparam_resource_manager_global: 0x03D5B0F8,
+    global_hinstance: 0x03D85688,
+    register_task_fn: 0x00EB1FE0,
 };
 
 #[derive(Clone)]
@@ -91,6 +99,8 @@ struct GparamOffsets {
     common_event_preload_fn: usize,
     gparam_filecap_request_fn: usize,
     gparam_resource_manager_global: usize,
+    global_hinstance: usize,
+    register_task_fn: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +139,7 @@ impl SupportedExe {
 type CommonEventPreloadFn = unsafe extern "system" fn(*mut c_void, u32, f32);
 type GparamFilecapRequestFn =
     unsafe extern "system" fn(*mut c_void, *const u16, usize) -> *mut c_void;
+type RegisterTaskFn = extern "C" fn(&CSTaskImp, CSTaskGroupIndex, &RecurringTask<FD4TaskData>);
 
 /// # Safety
 ///
@@ -183,11 +194,13 @@ pub unsafe extern "C" fn DllMain(_hmodule: usize, reason: u32) -> bool {
         append_log(
             &log_path,
             &format!(
-                "using offset profile {} filecap_request=0x{:X} common_event_prime=0x{:X} resource_manager_global=0x{:X}",
+                "using offset profile {} filecap_request=0x{:X} common_event_prime=0x{:X} resource_manager_global=0x{:X} global_hinstance=0x{:X} register_task=0x{:X}",
                 offsets.profile,
                 offsets.gparam_filecap_request_fn,
                 offsets.common_event_preload_fn,
-                offsets.gparam_resource_manager_global
+                offsets.gparam_resource_manager_global,
+                offsets.global_hinstance,
+                offsets.register_task_fn,
             ),
         );
 
@@ -283,9 +296,23 @@ fn load_common_event_ids_after_delay(
 ) {
     std::thread::sleep(Duration::from_millis(config.start_delay_ms));
 
-    let Ok(cs_task) = CSTaskImp::wait_for_instance(Duration::MAX) else {
-        append_log(&log_path, "failed: CSTaskImp instance not found");
-        return;
+    let exe = match unsafe { GetModuleHandleA(None) } {
+        Ok(exe) => exe,
+        Err(err) => {
+            append_log(
+                &log_path,
+                &format!("failed: GetModuleHandleA(None): {err:?}"),
+            );
+            return;
+        }
+    };
+    let base = exe.0 as usize;
+    let cs_task = match wait_for_task_instance(base, offsets, Duration::MAX) {
+        Ok(cs_task) => cs_task,
+        Err(message) => {
+            append_log(&log_path, &format!("failed: {message}"));
+            return;
+        }
     };
 
     append_log(
@@ -310,69 +337,121 @@ fn load_common_event_ids_after_delay(
     let prime_drawparam = config.prime_drawparam;
     let mut finished = false;
 
-    cs_task.run_recurring(
-        move |_: &FD4TaskData| {
-            if finished {
-                return;
+    let task = Box::leak(Box::new(RecurringTask::new(move |_: &FD4TaskData| {
+        if finished {
+            return;
+        }
+
+        frame = frame.wrapping_add(1);
+        if frame % retry_every_frames != 1 {
+            return;
+        }
+
+        let mut all_done = true;
+        for pending_id in &mut pending {
+            if pending_id.done {
+                continue;
             }
 
-            frame = frame.wrapping_add(1);
-            if frame % retry_every_frames != 1 {
-                return;
+            if pending_id.attempts >= retries_per_id {
+                append_log(
+                    &log_path,
+                    &format!(
+                        "common_event id={} stopped after {} attempts",
+                        pending_id.id, retries_per_id
+                    ),
+                );
+                pending_id.done = true;
+                continue;
             }
 
-            let mut all_done = true;
-            for pending_id in &mut pending {
-                if pending_id.done {
-                    continue;
-                }
-
-                if pending_id.attempts >= retries_per_id {
+            pending_id.attempts = pending_id.attempts.saturating_add(1);
+            match unsafe {
+                load_common_event_id(pending_id.id, request_filecap, prime_drawparam, offsets)
+            } {
+                Ok(message) => {
                     append_log(
                         &log_path,
                         &format!(
-                            "common_event id={} stopped after {} attempts",
-                            pending_id.id, retries_per_id
+                            "common_event id={} attempt={} {message}",
+                            pending_id.id, pending_id.attempts
                         ),
                     );
                     pending_id.done = true;
-                    continue;
                 }
-
-                pending_id.attempts = pending_id.attempts.saturating_add(1);
-                match unsafe {
-                    load_common_event_id(pending_id.id, request_filecap, prime_drawparam, offsets)
-                } {
-                    Ok(message) => {
-                        append_log(
-                            &log_path,
-                            &format!(
-                                "common_event id={} attempt={} {message}",
-                                pending_id.id, pending_id.attempts
-                            ),
-                        );
-                        pending_id.done = true;
-                    }
-                    Err(message) => {
-                        append_log(
-                            &log_path,
-                            &format!(
-                                "common_event id={} attempt={} failed: {message}",
-                                pending_id.id, pending_id.attempts
-                            ),
-                        );
-                        all_done = false;
-                    }
+                Err(message) => {
+                    append_log(
+                        &log_path,
+                        &format!(
+                            "common_event id={} attempt={} failed: {message}",
+                            pending_id.id, pending_id.attempts
+                        ),
+                    );
+                    all_done = false;
                 }
             }
+        }
 
-            if all_done || pending.iter().all(|item| item.done) {
-                append_log(&log_path, "common_event_loader finished");
-                finished = true;
+        if all_done || pending.iter().all(|item| item.done) {
+            append_log(&log_path, "common_event_loader finished");
+            finished = true;
+        }
+    })));
+
+    // The game retains this task for the process lifetime, matching the
+    // self-retaining behavior of fromsoftware-rs' recurring-task helper.
+    unsafe {
+        register_recurring_task(
+            base,
+            cs_task,
+            CSTaskGroupIndex::DrawParamUpdate,
+            task,
+            offsets,
+        );
+    }
+}
+
+fn wait_for_task_instance(
+    base: usize,
+    offsets: GparamOffsets,
+    timeout: Duration,
+) -> Result<&'static CSTaskImp, String> {
+    let start = Instant::now();
+    let global_hinstance = (base + offsets.global_hinstance) as *const usize;
+
+    while unsafe { std::ptr::read_volatile(global_hinstance) } == 0 {
+        if start.elapsed() > timeout {
+            return Err("system initialization timed out".to_string());
+        }
+        std::thread::yield_now();
+    }
+
+    loop {
+        match unsafe { CSTaskImp::instance() } {
+            Ok(instance) => return Ok(instance),
+            Err(InstanceError::NotFound(_)) => {
+                return Err("CSTaskImp singleton was not found".to_string());
             }
-        },
-        CSTaskGroupIndex::DrawParamUpdate,
-    );
+            Err(InstanceError::Null(_)) => {
+                if start.elapsed() > timeout {
+                    return Err("CSTaskImp initialization timed out".to_string());
+                }
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+unsafe fn register_recurring_task(
+    base: usize,
+    cs_task: &CSTaskImp,
+    group: CSTaskGroupIndex,
+    task: &RecurringTask<FD4TaskData>,
+    offsets: GparamOffsets,
+) {
+    let register_task: RegisterTaskFn =
+        unsafe { std::mem::transmute(base + offsets.register_task_fn) };
+    register_task(cs_task, group, task);
 }
 
 unsafe fn load_common_event_id(
@@ -516,5 +595,19 @@ mod tests {
         assert_eq!(version.offsets().common_event_preload_fn, 0x00AB9CB0);
         assert_eq!(version.offsets().gparam_filecap_request_fn, 0x001F2420);
         assert_eq!(version.offsets().gparam_resource_manager_global, 0x03D5F158);
+        assert_eq!(version.offsets().global_hinstance, 0x03D89708);
+        assert_eq!(version.offsets().register_task_fn, 0x00EB3DE0);
+    }
+
+    #[test]
+    fn preserves_legacy_task_runtime_profiles() {
+        for version in [
+            SupportedExe::Ww262,
+            SupportedExe::Jp2611,
+            SupportedExe::Jp2621,
+        ] {
+            assert_eq!(version.offsets().global_hinstance, 0x03D85688);
+            assert_eq!(version.offsets().register_task_fn, 0x00EB1FE0);
+        }
     }
 }
