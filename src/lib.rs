@@ -20,6 +20,16 @@ use windows::Win32::{
     System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleA},
 };
 
+const WW_271_OFFSETS: GparamOffsets = GparamOffsets {
+    // Verified against WW 2.7.1.0: only task registration moved by 0x70.
+    profile: "WW 2.7.1.0",
+    common_event_preload_fn: 0x00AB9CB0,
+    gparam_filecap_request_fn: 0x001F2420,
+    gparam_resource_manager_global: 0x03D5F158,
+    global_hinstance: 0x03D89708,
+    register_task_fn: 0x00EB3E50,
+};
+
 const WW_270_OFFSETS: GparamOffsets = GparamOffsets {
     // Verified against WW eldenring.exe product version 2.7.0.0.
     profile: "WW 2.7.0.0",
@@ -105,6 +115,7 @@ struct GparamOffsets {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SupportedExe {
+    Ww271,
     Ww270,
     Ww262,
     Jp2611,
@@ -116,6 +127,7 @@ impl GameVersion for SupportedExe {
 
     fn from_lang_version(lang_id: u16, version: &str) -> Option<Self> {
         match (lang_id, version) {
+            (LANG_ID_EN, "2.7.1.0") => Some(Self::Ww271),
             (LANG_ID_EN, "2.7.0.0") => Some(Self::Ww270),
             (LANG_ID_EN, "2.6.2.0") => Some(Self::Ww262),
             (LANG_ID_JP, "2.6.1.1") => Some(Self::Jp2611),
@@ -128,6 +140,7 @@ impl GameVersion for SupportedExe {
 impl SupportedExe {
     const fn offsets(self) -> &'static GparamOffsets {
         match self {
+            Self::Ww271 => &WW_271_OFFSETS,
             Self::Ww270 => &WW_270_OFFSETS,
             Self::Ww262 => &WW_262_OFFSETS,
             Self::Jp2611 => &JP_2611_OFFSETS,
@@ -585,6 +598,21 @@ fn append_log(path: &Option<PathBuf>, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_ww_271_without_reusing_the_old_task_entry() {
+        let version = SupportedExe::from_lang_version(LANG_ID_EN, "2.7.1.0").unwrap();
+        assert_eq!(version, SupportedExe::Ww271);
+        let offsets = version.offsets();
+        assert_eq!(offsets.register_task_fn, 0x00EB3E50);
+        assert_eq!(WW_270_OFFSETS.register_task_fn, 0x00EB3DE0);
+        assert_eq!(offsets.common_event_preload_fn, 0x00AB9CB0);
+        assert_eq!(offsets.gparam_filecap_request_fn, 0x001F2420);
+        assert_eq!(offsets.gparam_resource_manager_global, 0x03D5F158);
+        assert_eq!(offsets.global_hinstance, 0x03D89708);
+        assert_eq!(SupportedExe::from_lang_version(LANG_ID_JP, "2.7.1.1"), None);
+        assert_eq!(SupportedExe::from_lang_version(LANG_ID_EN, "2.7.2.0"), None);
+    }
 
     #[test]
     fn recognizes_ww_270_profile() {

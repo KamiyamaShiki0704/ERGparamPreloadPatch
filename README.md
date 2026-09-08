@@ -45,6 +45,7 @@ This patch uses per-executable offset profiles and disables itself when the runn
 
 Currently supported profiles:
 
+- WW `2.7.1.0` (game version `1.17.1`; local build awaiting runtime validation)
 - WW `2.7.0.0`
 - WW `2.6.2.0`
 - JP `2.6.1.1`
@@ -58,8 +59,11 @@ The loader keeps `global_hinstance` and `register_task` in its own per-executabl
 
 The verified offsets are:
 
+For WW `2.7.1.0`, the three GPARAM addresses below and `global_hinstance` (`0x03D89708`) are unchanged from WW `2.7.0.0`. Task registration moved from `0x00EB3DE0` to `0x00EB3E50`. The pinned Cargo revision remains unchanged because this DLL manages task RVAs locally. JP `2.7.1.x` has not been verified.
+
 | Profile | GPARAM filecap request | CommonEvent drawparam prime | GPARAM resource manager global |
 | --- | --- | --- | --- |
+| WW `2.7.1.0` | `0x001F2420` | `0x00AB9CB0` | `0x03D5F158` |
 | WW `2.7.0.0` | `0x001F2420` | `0x00AB9CB0` | `0x03D5F158` |
 | WW `2.6.2.0` | `0x001F2420` | `0x00AB89A0` | `0x03D5B0F8` |
 | JP `2.6.1.1` | `0x001F2420` | `0x00AB89A0` | `0x03D5B0F8` |
