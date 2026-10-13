@@ -3,21 +3,9 @@ resolver = "2"
 members = ["."]
 
 [workspace.dependencies]
-fromsoftware-shared = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "0b44ede3ae9d95d39bfef65edc0694380a1b83c3", package = "fromsoftware-shared" }
-eldenring = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "0b44ede3ae9d95d39bfef65edc0694380a1b83c3", package = "eldenring" }
-pelite = "0.10"
-
-[workspace.dependencies.windows]
-version = "0.61"
-features = [
-    "Win32_Foundation",
-    "Win32_System_Kernel",
-    "Win32_System_Threading",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_Diagnostics_Debug",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Memory",
-]
+shikifsrs-runtime = { git = "https://github.com/KamiyamaShiki0704/ShikiFSRS.git", rev = "930f818431e72209b49d2e37265a1f8150fa5390" }
+shikifsrs-elden-ring = { git = "https://github.com/KamiyamaShiki0704/ShikiFSRS.git", rev = "930f818431e72209b49d2e37265a1f8150fa5390" }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
 
 [package]
 name = "er-gparam-preload-patch"
@@ -31,9 +19,8 @@ name = "gparam_preload_patch"
 crate-type = ["cdylib"]
 
 [dependencies]
-fromsoftware-shared.workspace = true
-eldenring.workspace = true
-pelite.workspace = true
+shikifsrs-runtime.workspace = true
+shikifsrs-elden-ring.workspace = true
 windows.workspace = true
 
 [profile.release]

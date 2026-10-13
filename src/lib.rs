@@ -1,73 +1,29 @@
+//! Independently verified fixed WW 1.17.1 Gparam candidate; real resource acceptance pending.
+//! The loader retains this DLL until the resident task pins it; native registration/allocator
+//! serialization and future DrawParamUpdate full resource-graph lifetime remain experimental.
+#![deny(unsafe_op_in_unsafe_fn)]
+use shikifsrs_elden_ring::{
+    TaskPhase, Ww171File, gparam::CommonEventId, gparam_resident::ResidentGparamSlot,
+    gparam_task::GparamPreloadConfig,
+};
+use shikifsrs_runtime::memory::CurrentProcess;
 use std::{
     ffi::c_void,
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
-
-use eldenring::{
-    cs::{CSTaskGroupIndex, CSTaskImp, CSWorldSceneDrawParamManager},
-    fd4::FD4TaskData,
-};
-use fromsoftware_shared::{
-    FromStatic, InstanceError, RecurringTask,
-    game_version::{GameVersion, LANG_ID_EN, LANG_ID_JP},
-};
-use pelite::pe64::PeView;
 use windows::Win32::{
     Foundation::HMODULE,
-    System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleA},
+    System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW},
 };
-
-const WW_271_OFFSETS: GparamOffsets = GparamOffsets {
-    // Verified against WW 2.7.1.0: only task registration moved by 0x70.
-    profile: "WW 2.7.1.0",
-    common_event_preload_fn: 0x00AB9CB0,
-    gparam_filecap_request_fn: 0x001F2420,
-    gparam_resource_manager_global: 0x03D5F158,
-    global_hinstance: 0x03D89708,
-    register_task_fn: 0x00EB3E50,
-};
-
-const WW_270_OFFSETS: GparamOffsets = GparamOffsets {
-    // Verified against WW eldenring.exe product version 2.7.0.0.
-    profile: "WW 2.7.0.0",
-    common_event_preload_fn: 0x00AB9CB0,
-    gparam_filecap_request_fn: 0x001F2420,
-    gparam_resource_manager_global: 0x03D5F158,
-    global_hinstance: 0x03D89708,
-    register_task_fn: 0x00EB3DE0,
-};
-
-const WW_262_OFFSETS: GparamOffsets = GparamOffsets {
-    profile: "WW 2.6.2.0",
-    common_event_preload_fn: 0x00AB89A0,
-    gparam_filecap_request_fn: 0x001F2420,
-    gparam_resource_manager_global: 0x03D5B0F8,
-    global_hinstance: 0x03D85688,
-    register_task_fn: 0x00EB1FE0,
-};
-
-const JP_2621_OFFSETS: GparamOffsets = GparamOffsets {
-    // The current JP 1.16.2 executable is known to match the WW addresses.
-    profile: "JP 2.6.2.1",
-    common_event_preload_fn: 0x00AB89A0,
-    gparam_filecap_request_fn: 0x001F2420,
-    gparam_resource_manager_global: 0x03D5B0F8,
-    global_hinstance: 0x03D85688,
-    register_task_fn: 0x00EB1FE0,
-};
-
-const JP_2611_OFFSETS: GparamOffsets = GparamOffsets {
-    // Verified against eldenring.jp.exe product version 2.6.1.1.
-    profile: "JP 2.6.1.1",
-    common_event_preload_fn: 0x00AB89A0,
-    gparam_filecap_request_fn: 0x001F2420,
-    gparam_resource_manager_global: 0x03D5B0F8,
-    global_hinstance: 0x03D85688,
-    register_task_fn: 0x00EB1FE0,
-};
+static PRELOADER: ResidentGparamSlot = ResidentGparamSlot::new();
+static STARTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct Config {
@@ -96,144 +52,15 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone)]
-struct PendingId {
-    id: u32,
-    attempts: u32,
-    done: bool,
-}
-
-#[derive(Clone, Copy)]
-struct GparamOffsets {
-    profile: &'static str,
-    common_event_preload_fn: usize,
-    gparam_filecap_request_fn: usize,
-    gparam_resource_manager_global: usize,
-    global_hinstance: usize,
-    register_task_fn: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SupportedExe {
-    Ww271,
-    Ww270,
-    Ww262,
-    Jp2611,
-    Jp2621,
-}
-
-impl GameVersion for SupportedExe {
-    const NAME: &'static str = "elden ring";
-
-    fn from_lang_version(lang_id: u16, version: &str) -> Option<Self> {
-        match (lang_id, version) {
-            (LANG_ID_EN, "2.7.1.0") => Some(Self::Ww271),
-            (LANG_ID_EN, "2.7.0.0") => Some(Self::Ww270),
-            (LANG_ID_EN, "2.6.2.0") => Some(Self::Ww262),
-            (LANG_ID_JP, "2.6.1.1") => Some(Self::Jp2611),
-            (LANG_ID_JP, "2.6.2.1") => Some(Self::Jp2621),
-            _ => None,
-        }
-    }
-}
-
-impl SupportedExe {
-    const fn offsets(self) -> &'static GparamOffsets {
-        match self {
-            Self::Ww271 => &WW_271_OFFSETS,
-            Self::Ww270 => &WW_270_OFFSETS,
-            Self::Ww262 => &WW_262_OFFSETS,
-            Self::Jp2611 => &JP_2611_OFFSETS,
-            Self::Jp2621 => &JP_2621_OFFSETS,
-        }
-    }
-}
-
-type CommonEventPreloadFn = unsafe extern "system" fn(*mut c_void, u32, f32);
-type GparamFilecapRequestFn =
-    unsafe extern "system" fn(*mut c_void, *const u16, usize) -> *mut c_void;
-type RegisterTaskFn = extern "C" fn(&CSTaskImp, CSTaskGroupIndex, &RecurringTask<FD4TaskData>);
-
-/// # Safety
-///
-/// This is exposed for Windows LoadLibrary. Do not call it directly.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn DllMain(_hmodule: usize, reason: u32) -> bool {
-    if reason != 1 {
-        return true;
-    }
-
-    let hmodule = _hmodule;
-    std::thread::spawn(move || {
-        let config = Config::load(hmodule);
-        let log_path = if config.log_enabled {
-            sidecar_path(hmodule, "gparam_preload_patch.log")
-        } else {
-            None
-        };
-        append_log(
-            &log_path,
-            &format!(
-                "loaded enabled={} log_enabled={} common_event_ids={:?} start_delay_ms={} retries_per_id={} retry_every_frames={} request_filecap={} prime_drawparam={}",
-                config.enabled,
-                config.log_enabled,
-                config.common_event_ids,
-                config.start_delay_ms,
-                config.retries_per_id,
-                config.retry_every_frames,
-                config.request_filecap,
-                config.prime_drawparam,
-            ),
-        );
-
-        if !config.enabled {
-            append_log(&log_path, "loader disabled by config");
-            return;
-        }
-
-        if config.common_event_ids.is_empty() {
-            append_log(&log_path, "no common_event_ids configured");
-            return;
-        }
-
-        let offsets = match detect_offsets() {
-            Ok(offsets) => offsets,
-            Err(message) => {
-                append_log(&log_path, &format!("{message}; loader disabled"));
-                return;
-            }
-        };
-
-        append_log(
-            &log_path,
-            &format!(
-                "using offset profile {} filecap_request=0x{:X} common_event_prime=0x{:X} resource_manager_global=0x{:X} global_hinstance=0x{:X} register_task=0x{:X}",
-                offsets.profile,
-                offsets.gparam_filecap_request_fn,
-                offsets.common_event_preload_fn,
-                offsets.gparam_resource_manager_global,
-                offsets.global_hinstance,
-                offsets.register_task_fn,
-            ),
-        );
-
-        load_common_event_ids_after_delay(log_path, config, *offsets);
-    });
-
-    true
-}
-
 impl Config {
     fn load(hmodule: usize) -> Self {
+        config_path(hmodule)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .map(|contents| Self::parse(&contents))
+            .unwrap_or_default()
+    }
+    fn parse(contents: &str) -> Self {
         let mut config = Self::default();
-
-        let Some(path) = config_path(hmodule) else {
-            return config;
-        };
-        let Ok(contents) = fs::read_to_string(path) else {
-            return config;
-        };
-
         for raw_line in contents.lines() {
             let line = raw_line
                 .split_once('#')
@@ -300,250 +127,137 @@ impl Config {
         config.common_event_ids.dedup();
         config
     }
+    fn sdk_config(&self) -> shikifsrs_runtime::Result<GparamPreloadConfig> {
+        if self.common_event_ids.len() > 256 {
+            return Err(shikifsrs_runtime::Error::InvalidProfile(
+                "more than 256 common event IDs",
+            ));
+        }
+        Ok(GparamPreloadConfig {
+            enabled: self.enabled,
+            ids: self
+                .common_event_ids
+                .iter()
+                .copied()
+                .map(CommonEventId::new)
+                .collect::<shikifsrs_runtime::Result<_>>()?,
+            start_delay_ms: self.start_delay_ms,
+            attempts_per_id: self.retries_per_id,
+            retry_every_frames: self.retry_every_frames,
+            request_filecap: self.request_filecap,
+            prime_drawparam: self.prime_drawparam,
+        })
+    }
 }
 
-fn load_common_event_ids_after_delay(
-    log_path: Option<PathBuf>,
-    config: Config,
-    offsets: GparamOffsets,
-) {
-    std::thread::sleep(Duration::from_millis(config.start_delay_ms));
-
-    let exe = match unsafe { GetModuleHandleA(None) } {
-        Ok(exe) => exe,
-        Err(err) => {
-            append_log(
-                &log_path,
-                &format!("failed: GetModuleHandleA(None): {err:?}"),
-            );
-            return;
+/// # Safety
+/// Loader/registration and every future resource callback obey the module header contract.
+unsafe fn install(config: Config, log_path: Option<PathBuf>) -> Result<(), String> {
+    if !config.enabled || config.common_event_ids.is_empty() {
+        append_log(&log_path, "disabled or no common_event_ids configured");
+        return Ok(());
+    }
+    let mut schedule = config.sdk_config().map_err(|error| error.to_string())?;
+    let path = std::env::current_exe().map_err(|error| error.to_string())?;
+    let bytes: Arc<[u8]> = fs::read(path).map_err(|error| error.to_string())?.into();
+    // Reject unknown files before any loaded game-memory access.
+    let file = Ww171File::verify(&bytes).map_err(|error| error.to_string())?;
+    // Retain the original delay before task registration; the SDK must not wait it a second time.
+    std::thread::sleep(Duration::from_millis(schedule.start_delay_ms));
+    schedule.start_delay_ms = 0;
+    // SAFETY: None queries the process executable handle; this borrowed handle is never freed.
+    let base = unsafe { GetModuleHandleW(None) }
+        .map_err(|error| error.to_string())?
+        .0 as u64;
+    let memory = CurrentProcess;
+    loop {
+        let catalog = file
+            .bind(&memory, base)
+            .map_err(|error| error.to_string())?;
+        if let Some(group) = catalog
+            .observe_phase(TaskPhase::DRAW_PARAMETER_UPDATE)
+            .map_err(|error| error.to_string())?
+            && let Some(id) = group.native_group_id()
+            && catalog
+                .registered_group(id, 4096)
+                .map_err(|error| error.to_string())?
+                .is_some()
+        {
+            break;
         }
-    };
-    let base = exe.0 as usize;
-    let cs_task = match wait_for_task_instance(base, offsets, Duration::MAX) {
-        Ok(cs_task) => cs_task,
-        Err(message) => {
-            append_log(&log_path, &format!("failed: {message}"));
-            return;
-        }
-    };
-
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // SAFETY: Experimental supported registration phase and future exclusive DrawParamUpdate
+    // resource/manager/allocator graph contract. Group presence alone does not prove that contract.
+    let installed = unsafe { PRELOADER.install_current(bytes, base, schedule, None) }
+        .map_err(|error| error.to_string())?;
+    let control = installed.registration.map_err(|error| {
+        format!(
+            "module pinned at {:#x}; registration failed: {error}",
+            installed.module_handle
+        )
+    })?;
     append_log(
         &log_path,
-        "common_event_loader scheduler installed on DrawParamUpdate",
+        "WW 1.17.1 DrawParamUpdate scheduler registered (experimental)",
     );
-
-    let mut frame = 0u32;
-    let mut pending = config
-        .common_event_ids
-        .iter()
-        .copied()
-        .map(|id| PendingId {
-            id,
-            attempts: 0,
-            done: false,
-        })
-        .collect::<Vec<_>>();
-    let retry_every_frames = config.retry_every_frames;
-    let retries_per_id = config.retries_per_id;
-    let request_filecap = config.request_filecap;
-    let prime_drawparam = config.prime_drawparam;
-    let mut finished = false;
-
-    let task = Box::leak(Box::new(RecurringTask::new(move |_: &FD4TaskData| {
-        if finished {
-            return;
-        }
-
-        frame = frame.wrapping_add(1);
-        if frame % retry_every_frames != 1 {
-            return;
-        }
-
-        let mut all_done = true;
-        for pending_id in &mut pending {
-            if pending_id.done {
-                continue;
+    let mut previous = Vec::new();
+    loop {
+        if let Some(report) = control.last_report() {
+            for (index, entry) in report.submissions.iter().enumerate() {
+                if previous.get(index) != Some(entry) {
+                    append_log(
+                        &log_path,
+                        &format!(
+                            "common_event id={} attempt={} state={:?} request={:?} prime={:?} error={:?}",
+                            entry.id.value(),
+                            entry.attempts,
+                            entry.state,
+                            entry.file_request,
+                            entry.prime,
+                            entry.last_error
+                        ),
+                    );
+                }
             }
-
-            if pending_id.attempts >= retries_per_id {
+            previous = report.submissions;
+            if report.settled || report.blocked {
                 append_log(
                     &log_path,
-                    &format!(
-                        "common_event id={} stopped after {} attempts",
-                        pending_id.id, retries_per_id
-                    ),
+                    if report.blocked {
+                        "submission uncertain; receipts retained, no automatic retry"
+                    } else {
+                        "scheduler settled; native submission does not prove resource ready"
+                    },
                 );
-                pending_id.done = true;
-                continue;
-            }
-
-            pending_id.attempts = pending_id.attempts.saturating_add(1);
-            match unsafe {
-                load_common_event_id(pending_id.id, request_filecap, prime_drawparam, offsets)
-            } {
-                Ok(message) => {
-                    append_log(
-                        &log_path,
-                        &format!(
-                            "common_event id={} attempt={} {message}",
-                            pending_id.id, pending_id.attempts
-                        ),
-                    );
-                    pending_id.done = true;
-                }
-                Err(message) => {
-                    append_log(
-                        &log_path,
-                        &format!(
-                            "common_event id={} attempt={} failed: {message}",
-                            pending_id.id, pending_id.attempts
-                        ),
-                    );
-                    all_done = false;
-                }
+                break;
             }
         }
-
-        if all_done || pending.iter().all(|item| item.done) {
-            append_log(&log_path, "common_event_loader finished");
-            finished = true;
-        }
-    })));
-
-    // The game retains this task for the process lifetime, matching the
-    // self-retaining behavior of fromsoftware-rs' recurring-task helper.
-    unsafe {
-        register_recurring_task(
-            base,
-            cs_task,
-            CSTaskGroupIndex::DrawParamUpdate,
-            task,
-            offsets,
-        );
+        std::thread::sleep(Duration::from_millis(50));
     }
+    // The static resident slot retains registration; exiting this worker never unregisters/frees it.
+    Ok(())
 }
 
-fn wait_for_task_instance(
-    base: usize,
-    offsets: GparamOffsets,
-    timeout: Duration,
-) -> Result<&'static CSTaskImp, String> {
-    let start = Instant::now();
-    let global_hinstance = (base + offsets.global_hinstance) as *const usize;
-
-    while unsafe { std::ptr::read_volatile(global_hinstance) } == 0 {
-        if start.elapsed() > timeout {
-            return Err("system initialization timed out".to_string());
-        }
-        std::thread::yield_now();
-    }
-
-    loop {
-        match unsafe { CSTaskImp::instance() } {
-            Ok(instance) => return Ok(instance),
-            Err(InstanceError::NotFound(_)) => {
-                return Err("CSTaskImp singleton was not found".to_string());
+/// # Safety
+/// Windows invokes the standard DLL ABI. Host retains this DLL until PIN and obeys the
+/// module header's experimental native phase/lifetime contracts; hot-unloading is unsupported.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn DllMain(hmodule: usize, reason: u32, _reserved: *mut c_void) -> i32 {
+    if reason == 1 && !STARTED.swap(true, Ordering::AcqRel) {
+        let _ = std::thread::Builder::new().name("gparam-preload-init".into()).spawn(move || {
+            let config = Config::load(hmodule);
+            let log_path = if config.log_enabled { sidecar_path(hmodule, "gparam_preload_patch.log") } else { None };
+            append_log(&log_path, &format!("loaded enabled={} common_event_ids={:?} start_delay_ms={} retries_per_id={} retry_every_frames={} request_filecap={} prime_drawparam={}",
+                config.enabled, config.common_event_ids, config.start_delay_ms, config.retries_per_id,
+                config.retry_every_frames, config.request_filecap, config.prime_drawparam));
+            // SAFETY: Host contract is propagated from DLL load to this worker and resident callback.
+            if let Err(error) = unsafe { install(config, log_path.clone()) } {
+                append_log(&log_path, &format!("rejected: {error}"));
             }
-            Err(InstanceError::Null(_)) => {
-                if start.elapsed() > timeout {
-                    return Err("CSTaskImp initialization timed out".to_string());
-                }
-                std::thread::yield_now();
-            }
-        }
+        });
     }
-}
-
-unsafe fn register_recurring_task(
-    base: usize,
-    cs_task: &CSTaskImp,
-    group: CSTaskGroupIndex,
-    task: &RecurringTask<FD4TaskData>,
-    offsets: GparamOffsets,
-) {
-    let register_task: RegisterTaskFn =
-        unsafe { std::mem::transmute(base + offsets.register_task_fn) };
-    register_task(cs_task, group, task);
-}
-
-unsafe fn load_common_event_id(
-    id: u32,
-    request_filecap: bool,
-    prime_drawparam: bool,
-    offsets: GparamOffsets,
-) -> Result<String, String> {
-    let exe = unsafe { GetModuleHandleA(None) }
-        .map_err(|err| format!("GetModuleHandleA(None) failed: {err:?}"))?;
-    let base = exe.0 as usize;
-
-    let request_message = if request_filecap {
-        unsafe { request_common_event_filecap(base, id, offsets) }?
-    } else {
-        "filecap_request skipped".to_string()
-    };
-
-    if !prime_drawparam {
-        return Ok(format!("{request_message}; prime_drawparam skipped"));
-    }
-
-    let fn_addr = base + offsets.common_event_preload_fn;
-    let manager = unsafe { CSWorldSceneDrawParamManager::instance() }
-        .map_err(|_| "CSWorldSceneDrawParamManager instance not found".to_string())?;
-    let manager_addr = manager as *const CSWorldSceneDrawParamManager as *mut c_void;
-    let preload: CommonEventPreloadFn = unsafe { std::mem::transmute(fn_addr) };
-
-    unsafe {
-        preload(manager_addr, id, 0.0);
-    }
-
-    Ok(format!(
-        "{request_message}; primed eldenring.exe+0x{:X} addr=0x{fn_addr:X} manager=0x{:X}",
-        offsets.common_event_preload_fn, manager_addr as usize
-    ))
-}
-
-unsafe fn request_common_event_filecap(
-    base: usize,
-    id: u32,
-    offsets: GparamOffsets,
-) -> Result<String, String> {
-    let manager_ptr_addr = base + offsets.gparam_resource_manager_global;
-    let resource_manager = unsafe { *(manager_ptr_addr as *const *mut c_void) };
-    if resource_manager.is_null() {
-        return Err(format!(
-            "gparam resource manager global eldenring.exe+0x{:X} is null",
-            offsets.gparam_resource_manager_global
-        ));
-    }
-
-    let request_addr = base + offsets.gparam_filecap_request_fn;
-    let request: GparamFilecapRequestFn = unsafe { std::mem::transmute(request_addr) };
-    let path = format!("gparam:/m00_00_{id:04}_CommonEvent.gparam");
-    let mut wide_path = path.encode_utf16().collect::<Vec<_>>();
-    wide_path.push(0);
-    let filecap = unsafe { request(resource_manager, wide_path.as_ptr(), 0) };
-
-    if filecap.is_null() {
-        return Err(format!(
-            "filecap_request path={path} result=0x0 resource_manager=0x{:X}",
-            resource_manager as usize
-        ));
-    }
-
-    Ok(format!(
-        "filecap_request path={path} fn=eldenring.exe+0x{:X} addr=0x{request_addr:X} resource_manager=0x{:X} result=0x{:X}",
-        offsets.gparam_filecap_request_fn, resource_manager as usize, filecap as usize
-    ))
-}
-
-fn detect_offsets() -> Result<&'static GparamOffsets, String> {
-    let exe = unsafe { GetModuleHandleA(None) }
-        .map_err(|err| format!("GetModuleHandleA(None) failed: {err:?}"))?;
-    let module = unsafe { PeView::module(exe.0 as *const u8) };
-    SupportedExe::detect(&module)
-        .map(|version| version.offsets())
-        .map_err(|err| format!("unsupported Elden Ring executable: {err}"))
+    1
 }
 
 fn parse_id_list(value: &str) -> Vec<u32> {
@@ -573,10 +287,10 @@ fn config_path(hmodule: usize) -> Option<PathBuf> {
 }
 
 fn sidecar_path(hmodule: usize, file_name: &str) -> Option<PathBuf> {
-    let mut buffer = [0u16; 260];
+    let mut buffer = vec![0u16; 32768];
     let len =
         unsafe { GetModuleFileNameW(Some(HMODULE(hmodule as *mut c_void)), &mut buffer) } as usize;
-    if len == 0 {
+    if len == 0 || len >= buffer.len() {
         return None;
     }
 
@@ -596,46 +310,4 @@ fn append_log(path: &Option<PathBuf>, message: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recognizes_ww_271_without_reusing_the_old_task_entry() {
-        let version = SupportedExe::from_lang_version(LANG_ID_EN, "2.7.1.0").unwrap();
-        assert_eq!(version, SupportedExe::Ww271);
-        let offsets = version.offsets();
-        assert_eq!(offsets.register_task_fn, 0x00EB3E50);
-        assert_eq!(WW_270_OFFSETS.register_task_fn, 0x00EB3DE0);
-        assert_eq!(offsets.common_event_preload_fn, 0x00AB9CB0);
-        assert_eq!(offsets.gparam_filecap_request_fn, 0x001F2420);
-        assert_eq!(offsets.gparam_resource_manager_global, 0x03D5F158);
-        assert_eq!(offsets.global_hinstance, 0x03D89708);
-        assert_eq!(SupportedExe::from_lang_version(LANG_ID_JP, "2.7.1.1"), None);
-        assert_eq!(SupportedExe::from_lang_version(LANG_ID_EN, "2.7.2.0"), None);
-    }
-
-    #[test]
-    fn recognizes_ww_270_profile() {
-        let version = SupportedExe::from_lang_version(LANG_ID_EN, "2.7.0.0")
-            .expect("WW 2.7.0.0 should be supported");
-
-        assert_eq!(version, SupportedExe::Ww270);
-        assert_eq!(version.offsets().common_event_preload_fn, 0x00AB9CB0);
-        assert_eq!(version.offsets().gparam_filecap_request_fn, 0x001F2420);
-        assert_eq!(version.offsets().gparam_resource_manager_global, 0x03D5F158);
-        assert_eq!(version.offsets().global_hinstance, 0x03D89708);
-        assert_eq!(version.offsets().register_task_fn, 0x00EB3DE0);
-    }
-
-    #[test]
-    fn preserves_legacy_task_runtime_profiles() {
-        for version in [
-            SupportedExe::Ww262,
-            SupportedExe::Jp2611,
-            SupportedExe::Jp2621,
-        ] {
-            assert_eq!(version.offsets().global_hinstance, 0x03D85688);
-            assert_eq!(version.offsets().register_task_fn, 0x00EB1FE0);
-        }
-    }
-}
+mod tests;
